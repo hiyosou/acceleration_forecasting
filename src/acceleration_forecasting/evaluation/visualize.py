@@ -99,6 +99,14 @@ def plot_evaluation(
     top.legend(loc="upper left", fontsize=8, ncol=2)
     if notes:
         top.text(0.99, 0.98, "\n".join(notes), transform=top.transAxes, ha="right", va="top", fontsize=8)
+    if metadata.get("guide_search_mode") == "hybrid_spatiotemporal":
+        top.text(
+            0.01, 0.02,
+            "Guide search: hybrid spatiotemporal\n"
+            f"Near range: same/adjacent +/-{float(metadata.get('near_distance_m', 100.0)):.0f}m requires completed past\n"
+            "Far range: all periods",
+            transform=top.transAxes, ha="left", va="bottom", fontsize=7, color="0.25",
+        )
 
     months = np.arange(1, 19)
     for sample in samples:

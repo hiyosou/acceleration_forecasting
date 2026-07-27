@@ -59,6 +59,7 @@ def build_parser():
     evaluate.add_argument("--dataset-dir", default=str(DEFAULT_ARTIFACTS / "datasets"))
     evaluate.add_argument("--prediction-dir", default=str(DEFAULT_ARTIFACTS / "predictions"))
     evaluate.add_argument("--output-dir", default=str(DEFAULT_ARTIFACTS / "evaluation"))
+    evaluate.add_argument("--plot-output-dir")
     evaluate.add_argument("--bootstrap", type=int, default=1000)
     evaluate.add_argument("--plot", action="store_true")
     evaluate.add_argument("--plot-max-targets", type=int, default=100)
@@ -106,6 +107,7 @@ def main(argv=None):
             args.dataset_dir, args.prediction_dir, args.output_dir,
             bootstrap_iterations=args.bootstrap, plot=args.plot,
             plot_max_targets=args.plot_max_targets, y_max=args.y_max, dpi=args.dpi,
+            plot_output_dir=args.plot_output_dir,
             progress=not args.no_progress,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))

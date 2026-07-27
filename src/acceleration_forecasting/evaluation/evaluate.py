@@ -37,6 +37,7 @@ def evaluate(
     plot_max_targets=100,
     y_max=5.0,
     dpi=150,
+    plot_output_dir=None,
     progress=True,
 ):
     dataset_dir, prediction_dir, output_dir = map(Path, (dataset_dir, prediction_dir, output_dir))
@@ -128,6 +129,12 @@ def evaluate(
     pd.DataFrame([summary]).to_csv(output_dir / "evaluation_summary.csv", index=False, encoding="utf-8-sig")
 
     if plot and not per_target_frame.empty:
+        plot_root = Path(plot_output_dir) if plot_output_dir else output_dir / "plots"
+        search_config_path = dataset_dir / "guide_search_config.json"
+        search_config = (
+            json.loads(search_config_path.read_text(encoding="utf-8"))
+            if search_config_path.is_file() else {}
+        )
         source = json.loads((dataset_dir / "source_retrieval_artifacts.json").read_text(encoding="utf-8"))
         retrieval_dir = Path(source["retrieval_artifact_dir"])
         history = _actual_history(retrieval_dir)
@@ -150,8 +157,10 @@ def evaluate(
             ].copy()
             relevant = relevant.loc[pd.to_numeric(relevant["velocity"], errors="coerce").between(50, 75, inclusive="both")]
             target_index = target_lookup[target_id]
+            meta["guide_search_mode"] = search_config.get("guide_search_mode", "unknown")
+            meta["near_distance_m"] = search_config.get("near_distance_m", 100.0)
             plot_evaluation(
-                output_dir / "plots" / str(meta["direction"]) / f"{float(meta['bin_start_m']):.0f}-{float(meta['bin_end_m']):.0f}m" / f"{target_id}_evaluation.png",
+                plot_root / str(meta["direction"]) / f"{float(meta['bin_start_m']):.0f}-{float(meta['bin_end_m']):.0f}m" / f"{target_id}_evaluation.png",
                 meta, relevant, predictions.loc[predictions["target_id"].astype(str) == target_id],
                 target_values[target_index], target_masks[target_index], guide_values[data_index], guide_masks[data_index],
                 guides.loc[guides["target_id"].astype(str) == target_id], sample_map[target_id], y_max, dpi,

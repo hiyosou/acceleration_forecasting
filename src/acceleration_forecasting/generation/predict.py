@@ -45,6 +45,12 @@ def predict(
         raise ValueError(
             "selected_model.json has no sampling_bounds; rerun select-model with DDIM stabilization"
         )
+    dataset_config = json.loads(
+        (dataset_dir / "guide_search_config.json").read_text(encoding="utf-8")
+    )
+    dataset_build_id = dataset_config["dataset_build_id"]
+    if selection.get("dataset_build_id") != dataset_build_id:
+        raise ValueError("selected model and generation dataset use different guide search configurations")
     if not selection.get("quality_gate", {}).get("passed", False):
         raise ValueError("selected model did not pass the validation quality gate")
     sampling_bounds = SamplingBounds.from_dict(selection["sampling_bounds"])
@@ -54,6 +60,18 @@ def predict(
         include_targets=False,
     )
     prediction_path = output_dir / "predictions.csv"
+    previous_run_path = output_dir / "prediction_run.json"
+    previous_run = (
+        json.loads(previous_run_path.read_text(encoding="utf-8"))
+        if previous_run_path.is_file() else {}
+    )
+    stale_outputs = previous_run.get("dataset_build_id") != dataset_build_id
+    if stale_outputs:
+        prediction_path.unlink(missing_ok=True)
+        sample_dir = output_dir / "samples"
+        if sample_dir.is_dir():
+            for path in sample_dir.glob("samples_*.npz"):
+                path.unlink()
     existing = pd.read_csv(prediction_path, encoding="utf-8-sig") if prediction_path.is_file() else pd.DataFrame()
     completed = set(existing["target_id"].astype(str)) if not existing.empty else set()
     rows = existing.to_dict("records") if not existing.empty else []
@@ -131,6 +149,8 @@ def predict(
         "targets_read": False,
         "clean_prediction_clipping": True,
         "sampling_bounds": sampling_bounds.to_dict(),
+        "dataset_build_id": dataset_build_id,
+        "guide_search_settings": dataset_config,
     }
     (output_dir / "prediction_run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     return run

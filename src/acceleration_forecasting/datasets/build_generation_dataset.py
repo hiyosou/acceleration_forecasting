@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from collections import defaultdict
 from pathlib import Path
@@ -22,6 +23,20 @@ ARRAY_NAMES = (
     "current_values", "history_values", "history_masks", "guide_values",
     "guide_deltas", "guide_masks", "guide_similarities", "retrieval_masks",
 )
+
+GUIDE_SEARCH_SETTINGS = {
+    "guide_search_mode": "hybrid_spatiotemporal",
+    "near_distance_m": 100.0,
+    "spatial_tolerance_m": 1e-6,
+    "near_candidates_require_complete_past": True,
+    "far_candidates_strict_time": False,
+    "exclude_same_dataset": True,
+}
+
+
+def _build_id(settings):
+    encoded = json.dumps(settings, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _json_list(value):
@@ -226,8 +241,17 @@ def prepare_generation_dataset(
     development_ids = set(development["dataset_id"].astype(str))
     search_config = GuideSearchConfig(
         top_k=int(top_k), max_current_difference=float(max_current_difference),
-        min_valid_months=int(min_valid_guide_months), strict_time=True,
+        min_valid_months=int(min_valid_guide_months), strict_time=False,
+        **GUIDE_SEARCH_SETTINGS,
     )
+    search_settings = {
+        **GUIDE_SEARCH_SETTINGS,
+        "top_k": int(top_k),
+        "max_current_difference": float(max_current_difference),
+        "min_valid_guide_months": int(min_valid_guide_months),
+        "min_valid_target_months": int(min_valid_target_months),
+    }
+    dataset_build_id = _build_id(search_settings)
     development_record_ids = {
         (str(model_split), str(trend_id)): list(group["record_id"].astype(str))
         for (model_split, trend_id), group in manifest.groupby(
@@ -250,6 +274,7 @@ def prepare_generation_dataset(
     assignments = []
     summary = {}
     split_diagnostics = {}
+    search_diagnostics = defaultdict(int)
     split_specs = (
         ("model_train", development.loc[development["model_split"] == "model_train"], max_train),
         ("model_validation", development.loc[development["model_split"] == "model_validation"], max_validation),
@@ -279,11 +304,15 @@ def prepare_generation_dataset(
                 groups[str(row["dataset_id"])], row["measurement_date"]
             )
             allowed = development_ids if split == "inference" else train_ids
-            guides = index.search(
+            guides, diagnostics = index.search(
                 np.stack(query_vectors), query_date=pd.Timestamp(row["measurement_date"]).strftime("%Y-%m-%d"),
                 query_dataset_id=row["dataset_id"], query_current=current,
+                query_bin_start_m=float(row["bin_start_m"]),
                 allowed_dataset_ids=allowed, config=search_config,
+                return_diagnostics=True,
             )
+            for name, value in diagnostics.items():
+                search_diagnostics[name] += int(value)
             guide_values = np.full((top_k, 18), np.nan, dtype=np.float32)
             guide_deltas = np.full((top_k, 18), np.nan, dtype=np.float32)
             guide_masks = np.zeros((top_k, 18), dtype=np.float32)
@@ -307,10 +336,20 @@ def prepare_generation_dataset(
                     "guide_current_acc_z_max": guide["current_acc_z_max"],
                     "current_max_difference": guide["current_max_difference"],
                     "guide_valid_months": int(mask.sum()), "guide_available_date": guide["guide_available_date"],
+                    "query_bin_start_m": float(row["bin_start_m"]),
+                    "candidate_bin_start_m": float(guide["bin_start_m"]),
+                    "distance_difference_m": guide["distance_difference_m"],
+                    "spatially_near": guide["spatially_near"],
+                    "temporal_condition_applied": guide["temporal_condition_applied"],
                     "selection_status": "selected",
                 })
             for rank in range(len(guides), top_k):
-                assignments.append({"split": split, "target_id": row["target_id"], "guide_rank": rank + 1, "query_waveform_count": len(query_vectors), "selection_status": "not_found"})
+                assignments.append({
+                    "split": split, "target_id": row["target_id"],
+                    "guide_rank": rank + 1, "query_waveform_count": len(query_vectors),
+                    "query_bin_start_m": float(row["bin_start_m"]),
+                    "selection_status": "not_found",
+                })
             metadata.append({
                 "target_id": row["target_id"], "dataset_id": row["dataset_id"],
                 "anchor_date": pd.Timestamp(row["measurement_date"]).strftime("%Y-%m-%d"),
@@ -343,6 +382,9 @@ def prepare_generation_dataset(
             _save_split(split_dir, metadata, arrays, (target_values, target_masks))
         summary[split] = len(metadata)
     summary["split_diagnostics"] = split_diagnostics
+    summary["guide_search_diagnostics"] = dict(search_diagnostics)
+    summary["dataset_build_id"] = dataset_build_id
+    summary["guide_search_settings"] = search_settings
     pd.DataFrame(assignments).to_csv(output_dir / "guide_assignments.csv", index=False, encoding="utf-8-sig")
     source = {
         "retrieval_artifact_dir": str(retrieval_dir),
@@ -353,5 +395,9 @@ def prepare_generation_dataset(
         "read_only": True,
     }
     (output_dir / "source_retrieval_artifacts.json").write_text(json.dumps(source, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_dir / "guide_search_config.json").write_text(
+        json.dumps({"dataset_build_id": dataset_build_id, **search_settings}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     (output_dir / "dataset_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary

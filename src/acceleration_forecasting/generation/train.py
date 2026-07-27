@@ -76,6 +76,11 @@ def train_model(
     output = Path(artifact_dir) / model_name
     output.mkdir(parents=True, exist_ok=True)
     normalization_path = dataset_dir / "normalization.json"
+    search_config_path = dataset_dir / "guide_search_config.json"
+    dataset_build_id = (
+        json.loads(search_config_path.read_text(encoding="utf-8"))["dataset_build_id"]
+        if search_config_path.is_file() else "legacy"
+    )
     train_data = GenerationDataset(dataset_dir / "model_train", normalization_path)
     valid_data = GenerationDataset(dataset_dir / "model_validation", normalization_path)
     if batch_size is None:
@@ -102,20 +107,26 @@ def train_model(
     last_path = output / "last_model.pt"
     if resume and last_path.is_file():
         checkpoint = torch.load(last_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        ema.load_state_dict(checkpoint["ema_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        if "scaler_state_dict" in checkpoint:
-            scaler.load_state_dict(checkpoint["scaler_state_dict"])
-        start_epoch = int(checkpoint["epoch"]) + 1
-        best_loss = float(checkpoint["best_validation_loss"])
-        stale = int(checkpoint.get("stale_epochs", 0))
-        progress_message(
-            f"{model_name}: epoch {start_epoch}/{epochs} から再開 "
-            f"(best validation loss={best_loss:.6f})",
-            enabled=progress,
-        )
+        if checkpoint.get("dataset_build_id", "legacy") == dataset_build_id:
+            model.load_state_dict(checkpoint["model_state_dict"])
+            ema.load_state_dict(checkpoint["ema_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if "scaler_state_dict" in checkpoint:
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+            start_epoch = int(checkpoint["epoch"]) + 1
+            best_loss = float(checkpoint["best_validation_loss"])
+            stale = int(checkpoint.get("stale_epochs", 0))
+            progress_message(
+                f"{model_name}: epoch {start_epoch}/{epochs} から再開 "
+                f"(best validation loss={best_loss:.6f})",
+                enabled=progress,
+            )
+        else:
+            progress_message(
+                f"{model_name}: guide search configuration changed; old checkpoint is ignored",
+                enabled=progress,
+            )
     valid_t, valid_noise = _fixed_validation(valid_data, seed, model.steps)
     history = []
     history_path = output / "training_history.csv"
@@ -168,11 +179,15 @@ def train_model(
             "scheduler_state_dict": scheduler.state_dict(), "epoch": epoch,
             "scaler_state_dict": scaler.state_dict(),
             "best_validation_loss": best_loss, "stale_epochs": stale, "seed": seed,
+            "dataset_build_id": dataset_build_id,
         }
         torch.save(state, last_path)
         if improved:
             torch.save(state, output / "best_model.pt")
-            torch.save({"model_name": model_name, "model_state_dict": ema.state_dict(), "epoch": epoch, "seed": seed}, output / "best_ema_model.pt")
+            torch.save({
+                "model_name": model_name, "model_state_dict": ema.state_dict(),
+                "epoch": epoch, "seed": seed, "dataset_build_id": dataset_build_id,
+            }, output / "best_ema_model.pt")
         history.append({
             "epoch": epoch, "train_loss": sum(train_losses) / max(len(train_losses), 1),
             "validation_loss": validation_loss, "learning_rate": optimizer.param_groups[0]["lr"],
@@ -194,6 +209,7 @@ def train_model(
         "gradient_accumulation": accumulation, "effective_batch_size": batch_size * accumulation,
         "learning_rate": learning_rate, "weight_decay": weight_decay, "ema_decay": ema_decay,
         "seed": seed, "device": str(device), "best_validation_loss": best_loss,
+        "dataset_build_id": dataset_build_id,
     }
     (output / "resolved_config.json").write_text(json.dumps(resolved, indent=2), encoding="utf-8")
     return resolved

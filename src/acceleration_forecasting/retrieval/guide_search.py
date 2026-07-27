@@ -14,6 +14,12 @@ class GuideSearchConfig:
     max_current_difference: float = 0.5
     min_valid_months: int = 12
     strict_time: bool = True
+    guide_search_mode: str = "strict_time"
+    near_distance_m: float = 100.0
+    spatial_tolerance_m: float = 1e-6
+    near_candidates_require_complete_past: bool = False
+    far_candidates_strict_time: bool = True
+    exclude_same_dataset: bool = True
 
 
 def _load_rows(connection: sqlite3.Connection, allowed_dataset_ids=None):
@@ -42,6 +48,7 @@ def search_guides_for_embeddings(
     query_date,
     query_dataset_id,
     query_current_acc_z_max,
+    query_bin_start_m=None,
     allowed_dataset_ids=None,
     config: GuideSearchConfig | None = None,
 ):
@@ -62,10 +69,22 @@ def search_guides_for_embeddings(
     for row in _load_rows(connection, allowed_dataset_ids):
         candidate_date = str(row[2])
         candidate_dataset = str(row[5])
-        if candidate_date == str(query_date) or candidate_dataset == str(query_dataset_id):
+        if candidate_date == str(query_date):
+            continue
+        if config.exclude_same_dataset and candidate_dataset == str(query_dataset_id):
             continue
         available_date = str(row[11])
-        if config.strict_time and available_date >= str(query_date):
+        distance_difference = (
+            abs(float(row[16]) - float(query_bin_start_m))
+            if query_bin_start_m is not None else float("inf")
+        )
+        spatially_near = distance_difference <= (
+            config.near_distance_m + config.spatial_tolerance_m
+        )
+        require_past = config.strict_time or (
+            spatially_near and config.near_candidates_require_complete_past
+        ) or (not spatially_near and config.far_candidates_strict_time)
+        if require_past and available_date >= str(query_date):
             continue
         current = float(row[7])
         difference = current - query_current
@@ -102,6 +121,9 @@ def search_guides_for_embeddings(
             "bin_end_m": float(row[17]),
             "valid_months": valid_months,
             "similarity": similarity,
+            "distance_difference_m": distance_difference,
+            "spatially_near": spatially_near,
+            "temporal_condition_applied": require_past,
         }
         existing = best_by_date.get(candidate_date)
         if existing is None or (similarity, str(row[0])) > (
@@ -119,4 +141,3 @@ def search_guides_for_embeddings(
 def connect_read_only(path: str | Path):
     path = Path(path).resolve()
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
-

@@ -57,8 +57,10 @@ class GuideIndex:
         query_date,
         query_dataset_id,
         query_current,
+        query_bin_start_m=None,
         allowed_dataset_ids,
         config: GuideSearchConfig,
+        return_diagnostics=False,
     ):
         queries = np.asarray(query_embeddings, dtype=np.float32)
         if queries.ndim == 1:
@@ -67,16 +69,50 @@ class GuideIndex:
         queries = queries / np.maximum(norms, 1e-12)
         allowed = set(str(value) for value in allowed_dataset_ids)
         eligible = np.fromiter((dataset in allowed for dataset in self.datasets), dtype=bool)
-        eligible &= self.datasets != str(query_dataset_id)
-        eligible &= self.dates != str(query_date)
-        eligible &= np.isfinite(self.current)
-        eligible &= np.abs(self.current - float(query_current)) <= config.max_current_difference + 1e-12
-        eligible &= self.valid_months >= config.min_valid_months
-        if config.strict_time:
-            eligible &= self.available_dates < str(query_date)
+        diagnostics = {}
+
+        def apply_filter(name, condition):
+            nonlocal eligible
+            rejected = eligible & ~condition
+            diagnostics[name] = int(rejected.sum())
+            eligible &= condition
+
+        if config.exclude_same_dataset:
+            apply_filter("excluded_same_dataset", self.datasets != str(query_dataset_id))
+        else:
+            diagnostics["excluded_same_dataset"] = 0
+        apply_filter("excluded_same_date", self.dates != str(query_date))
+        apply_filter("excluded_non_finite", np.isfinite(self.current))
+        apply_filter(
+            "excluded_current_difference",
+            np.abs(self.current - float(query_current)) <= config.max_current_difference + 1e-12,
+        )
+        apply_filter(
+            "excluded_insufficient_valid_months",
+            self.valid_months >= config.min_valid_months,
+        )
+        if query_bin_start_m is None:
+            distance_differences = np.full(len(self.datasets), np.inf, dtype=np.float64)
+        else:
+            distance_differences = np.abs(
+                self.bin_starts.astype(np.float64) - float(query_bin_start_m)
+            )
+        spatially_near = distance_differences <= (
+            config.near_distance_m + config.spatial_tolerance_m
+        )
+        temporal_required = np.full(len(self.datasets), bool(config.strict_time))
+        if not config.strict_time:
+            temporal_required = np.where(
+                spatially_near,
+                bool(config.near_candidates_require_complete_past),
+                bool(config.far_candidates_strict_time),
+            )
+        temporal_ok = ~temporal_required | (self.available_dates < str(query_date))
+        apply_filter("excluded_near_not_yet_available", temporal_ok)
         indices = np.flatnonzero(eligible)
         if not len(indices):
-            return []
+            diagnostics["selected_guides"] = 0
+            return ([], diagnostics) if return_diagnostics else []
         similarities = queries @ self.embeddings[indices].T
         best_similarity = similarities.max(axis=0)
         order = np.argsort(-best_similarity, kind="stable")
@@ -109,9 +145,12 @@ class GuideIndex:
                     "bin_end_m": float(self.bin_ends[index]),
                     "valid_months": int(self.valid_months[index]),
                     "similarity": float(best_similarity[int(offset)]),
+                    "distance_difference_m": float(distance_differences[index]),
+                    "spatially_near": bool(spatially_near[index]),
+                    "temporal_condition_applied": bool(temporal_required[index]),
                 }
             )
             if len(selected) >= config.top_k:
                 break
-        return selected
-
+        diagnostics["selected_guides"] = len(selected)
+        return (selected, diagnostics) if return_diagnostics else selected

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
 from acceleration_forecasting.common.progress import progress_bar
 from acceleration_forecasting.datasets.generation_dataset import GenerationDataset
@@ -67,6 +68,16 @@ def select_model(
 ):
     dataset_dir, model_dir, output_dir = Path(dataset_dir), Path(model_dir), Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    search_config_path = dataset_dir / "guide_search_config.json"
+    search_config = json.loads(search_config_path.read_text(encoding="utf-8"))
+    dataset_build_id = search_config["dataset_build_id"]
+    for name in ("mlp", "unet"):
+        checkpoint_path = model_dir / name / "best_ema_model.pt"
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        if checkpoint.get("dataset_build_id") != dataset_build_id:
+            raise ValueError(
+                f"{name} checkpoint was trained with a different guide search configuration"
+            )
     dataset = GenerationDataset(dataset_dir / "model_validation", dataset_dir / "normalization.json")
     sampling_bounds = fit_sampling_bounds(dataset_dir)
     sampling_bounds.save(output_dir / "sampling_bounds.json")
@@ -123,6 +134,8 @@ def select_model(
         "sampling_bounds": sampling_bounds.to_dict(),
         "clean_prediction_clipping": True,
         "quality_gate": quality_gate,
+        "dataset_build_id": dataset_build_id,
+        "guide_search_settings": search_config,
     }
     (output_dir / "selected_model.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "selected_model.txt").write_text(
