@@ -11,11 +11,12 @@ from acceleration_forecasting.datasets.generation_dataset import GenerationDatas
 from acceleration_forecasting.evaluation.metrics import evaluate_target
 
 from .sampling import load_ema_checkpoint, sample_one
+from .sampling_bounds import fit_sampling_bounds
 
 
 def _evaluate_checkpoint(
     checkpoint, dataset, normalization, device, num_samples, max_records, seed,
-    progress=True,
+    clean_clip, progress=True,
 ):
     model, name, _ = load_ema_checkpoint(checkpoint, device)
     rows = []
@@ -27,14 +28,23 @@ def _evaluate_checkpoint(
         item = dataset[index]
         target_id = str(dataset.metadata.iloc[index]["target_id"])
         batch = {key: value.unsqueeze(0) if hasattr(value, "ndim") and value.ndim > 0 else value for key, value in item.items() if key not in ("target", "target_mask", "index")}
-        normalized = sample_one(model, batch, target_id, num_samples=num_samples, seed=seed)
+        normalized = sample_one(
+            model, batch, target_id, num_samples=num_samples, seed=seed,
+            clean_clip=clean_clip,
+        )
         samples = normalization.denormalize(normalized, clip_nonnegative=True)
         median = np.median(samples, axis=0)
         actual = normalization.denormalize(item["target"].numpy(), clip_nonnegative=True)
         mask = item["target_mask"].numpy().astype(bool)
         p10, p90 = np.percentile(samples, [10, 90], axis=0)
         metrics = evaluate_target(actual, mask, median, p10, p90)
-        rows.append({"model_name": name, "target_id": target_id, **metrics})
+        rows.append({
+            "model_name": name, "target_id": target_id,
+            "samples_finite": bool(np.isfinite(samples).all()),
+            "sample_min": float(np.min(samples)), "sample_max": float(np.max(samples)),
+            "quantiles_ordered": bool(np.all(p10 <= median) and np.all(median <= p90)),
+            **metrics,
+        })
     frame = pd.DataFrame(rows)
     return frame, {
         "model_name": name, "MAE": float(frame["MAE"].mean()),
@@ -43,6 +53,10 @@ def _evaluate_checkpoint(
         "mean_interval_width": float(frame["mean_interval_width"].mean()),
         "peak_value_error": float(frame["peak_value_error"].mean()),
         "peak_month_error": float(frame["peak_month_error"].mean()),
+        "samples_finite": bool(frame["samples_finite"].all()),
+        "quantiles_ordered": bool(frame["quantiles_ordered"].all()),
+        "sample_min": float(frame["sample_min"].min()),
+        "sample_max": float(frame["sample_max"].max()),
         "target_count": int(len(frame)),
     }
 
@@ -54,6 +68,8 @@ def select_model(
     dataset_dir, model_dir, output_dir = Path(dataset_dir), Path(model_dir), Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset = GenerationDataset(dataset_dir / "model_validation", dataset_dir / "normalization.json")
+    sampling_bounds = fit_sampling_bounds(dataset_dir)
+    sampling_bounds.save(output_dir / "sampling_bounds.json")
     results = []
     model_progress = progress_bar(
         ("mlp", "unet"), enabled=progress, total=2,
@@ -63,7 +79,8 @@ def select_model(
         model_progress.set_postfix(model=name, refresh=False)
         frame, summary = _evaluate_checkpoint(
             model_dir / name / "best_ema_model.pt", dataset, dataset.normalization,
-            device, num_samples, max_records, seed, progress=progress,
+            device, num_samples, max_records, seed, sampling_bounds.normalized,
+            progress=progress,
         )
         frame.to_csv(output_dir / f"{name}_metrics.csv", index=False, encoding="utf-8-sig")
         results.append(summary)
@@ -77,6 +94,25 @@ def select_model(
         selected = min(results, key=lambda item: item["MAE"])["model_name"]
         reason = f"{selected} had lower validation MAE by at least {equivalence_threshold}"
     selected_summary = next(item for item in results if item["model_name"] == selected)
+    tolerance = 1e-6
+    quality_checks = {
+        "all_samples_finite": bool(selected_summary["samples_finite"]),
+        "quantiles_ordered": bool(selected_summary["quantiles_ordered"]),
+        "samples_within_physical_bounds": bool(
+            selected_summary["sample_min"] >= sampling_bounds.physical_min - tolerance
+            and selected_summary["sample_max"] <= sampling_bounds.physical_max + tolerance
+        ),
+        "mae_within_training_std": bool(selected_summary["MAE"] <= dataset.normalization.std),
+        "interval_width_within_training_range": bool(
+            selected_summary["mean_interval_width"] <= sampling_bounds.physical_width
+        ),
+    }
+    quality_gate = {
+        "passed": bool(all(quality_checks.values())),
+        "checks": quality_checks,
+        "mae_limit": float(dataset.normalization.std),
+        "interval_width_limit": float(sampling_bounds.physical_width),
+    }
     payload = {
         "selected_model": selected,
         "selected_checkpoint": str((model_dir / selected / "best_ema_model.pt").resolve()),
@@ -84,6 +120,9 @@ def select_model(
         "mlp_mae": mlp["MAE"], "unet_mae": unet["MAE"],
         "mae_difference": difference, "equivalence_threshold": equivalence_threshold,
         "selection_reason": reason, "selected_metrics": selected_summary, "seed": seed,
+        "sampling_bounds": sampling_bounds.to_dict(),
+        "clean_prediction_clipping": True,
+        "quality_gate": quality_gate,
     }
     (output_dir / "selected_model.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "selected_model.txt").write_text(

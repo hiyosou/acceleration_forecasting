@@ -11,6 +11,7 @@ from acceleration_forecasting.common.progress import progress_bar, progress_mess
 from acceleration_forecasting.datasets.generation_dataset import GenerationDataset
 
 from .sampling import load_ema_checkpoint, sample_one
+from .sampling_bounds import SamplingBounds
 
 
 def _condition_batch(item):
@@ -40,6 +41,13 @@ def predict(
     dataset_dir, output_dir = Path(dataset_dir), Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     selection = json.loads(Path(selection_file).read_text(encoding="utf-8"))
+    if "sampling_bounds" not in selection:
+        raise ValueError(
+            "selected_model.json has no sampling_bounds; rerun select-model with DDIM stabilization"
+        )
+    if not selection.get("quality_gate", {}).get("passed", False):
+        raise ValueError("selected model did not pass the validation quality gate")
+    sampling_bounds = SamplingBounds.from_dict(selection["sampling_bounds"])
     model, model_name, actual_device = load_ema_checkpoint(selection["selected_checkpoint"], device)
     dataset = GenerationDataset(
         dataset_dir / "inference" / "inputs", dataset_dir / "normalization.json",
@@ -73,6 +81,7 @@ def predict(
         normalized = sample_one(
             model, _condition_batch(item), target_id, num_samples=num_samples,
             sampling_steps=sampling_steps, eta=eta, seed=seed,
+            clean_clip=sampling_bounds.normalized,
         )
         samples = dataset.normalization.denormalize(normalized, clip_nonnegative=True)
         mean = samples.mean(axis=0)
@@ -120,6 +129,8 @@ def predict(
         "sampling_steps": sampling_steps, "eta": eta, "seed": seed,
         "target_count": int(final["target_id"].nunique()), "elapsed_seconds": time.time() - started,
         "targets_read": False,
+        "clean_prediction_clipping": True,
+        "sampling_bounds": sampling_bounds.to_dict(),
     }
     (output_dir / "prediction_run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     return run

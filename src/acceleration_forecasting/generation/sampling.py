@@ -22,7 +22,10 @@ def load_ema_checkpoint(path, device=None):
 
 
 @torch.no_grad()
-def sample_one(model, batch, target_id, num_samples=100, sampling_steps=50, eta=0.0, seed=42, sample_batch=100):
+def sample_one(
+    model, batch, target_id, num_samples=100, sampling_steps=50, eta=0.0,
+    seed=42, sample_batch=100, clean_clip=None,
+):
     device = next(model.parameters()).device
     batch = move_batch(batch, device)
     samples = []
@@ -38,7 +41,7 @@ def sample_one(model, batch, target_id, num_samples=100, sampling_steps=50, eta=
         initial = torch.stack(initial)
         generated = model.ddim_sample(
             repeated, (count, 18), sampling_steps=sampling_steps, eta=eta,
-            initial_noise=initial,
+            initial_noise=initial, clean_clip=clean_clip,
         )
         samples.append(generated.cpu().numpy())
     return np.concatenate(samples, axis=0)

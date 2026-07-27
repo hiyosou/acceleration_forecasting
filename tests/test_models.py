@@ -1,10 +1,13 @@
 import numpy as np
 import pytest
 import torch
+import json
 
 from acceleration_forecasting.generation.diffusion import create_model
 from acceleration_forecasting.generation.guide_encoder import GuideEncoder
 from acceleration_forecasting.generation.masked_cross_attention import MaskedCrossAttention
+from acceleration_forecasting.generation.predict import predict
+from acceleration_forecasting.generation.sampling_bounds import fit_sampling_bounds
 
 
 def batch(batch_size=2):
@@ -80,3 +83,48 @@ def test_ddim_reproducible_with_initial_noise():
     two = model.ddim_sample(data, (1, 18), sampling_steps=5, initial_noise=initial)
     assert torch.allclose(one, two)
 
+
+@pytest.mark.parametrize("name", ["mlp", "unet"])
+@pytest.mark.parametrize("sampling_steps", [5, 10, 20])
+def test_ddim_clean_prediction_clipping_is_finite_and_bounded(name, sampling_steps):
+    model = create_model(name, steps=20)
+    model.eval()
+    data = batch(1)
+    initial = torch.randn(1, 18)
+    bounds = (-1.25, 2.5)
+    one = model.ddim_sample(
+        data, (1, 18), sampling_steps=sampling_steps,
+        initial_noise=initial, clean_clip=bounds,
+    )
+    two = model.ddim_sample(
+        data, (1, 18), sampling_steps=sampling_steps,
+        initial_noise=initial, clean_clip=bounds,
+    )
+    assert torch.isfinite(one).all()
+    assert float(one.min()) >= bounds[0]
+    assert float(one.max()) <= bounds[1]
+    assert torch.allclose(one, two)
+
+
+def test_sampling_bounds_use_fixed_physical_range_and_train_normalization(tmp_path):
+    train = tmp_path / "model_train"
+    train.mkdir()
+    np.save(train / "target_values.npy", np.array([[1.0, 2.0, 999.0], [3.0, np.nan, -999.0]], dtype=np.float32))
+    np.save(train / "target_masks.npy", np.array([[1, 1, 0], [1, 1, 0]], dtype=np.float32))
+    (tmp_path / "normalization.json").write_text(json.dumps({
+        "mean": 2.0, "std": 0.5, "fitted_observation_count": 3,
+        "split": "model_train",
+    }), encoding="utf-8")
+    bounds = fit_sampling_bounds(tmp_path)
+    assert bounds.physical_min == 0.3
+    assert bounds.physical_max == 5.0
+    assert bounds.normalized == pytest.approx((-3.4, 6.0))
+    assert bounds.valid_training_value_count == 3
+    assert bounds.bounds_policy == "fixed_physical"
+
+
+def test_predict_rejects_legacy_selection_without_sampling_bounds(tmp_path):
+    selection = tmp_path / "selected_model.json"
+    selection.write_text(json.dumps({"selected_checkpoint": "unused.pt"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="sampling_bounds"):
+        predict(tmp_path, selection, tmp_path / "output", progress=False)

@@ -46,7 +46,10 @@ class GaussianDiffusion(nn.Module):
         return per_record.mean()
 
     @torch.no_grad()
-    def ddim_sample(self, batch, shape, sampling_steps=50, eta=0.0, generator=None, initial_noise=None):
+    def ddim_sample(
+        self, batch, shape, sampling_steps=50, eta=0.0, generator=None,
+        initial_noise=None, clean_clip=None,
+    ):
         device = self.alpha_cumulative.device
         sample = (
             torch.randn(shape, device=device, generator=generator)
@@ -63,6 +66,11 @@ class GaussianDiffusion(nn.Module):
             else:
                 alpha_previous = torch.tensor(1.0, device=device)
             predicted_clean = (sample - (1 - alpha).sqrt() * predicted_noise) / alpha.sqrt()
+            if clean_clip is not None:
+                lower, upper = map(float, clean_clip)
+                if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
+                    raise ValueError("clean_clip must contain finite increasing bounds")
+                predicted_clean = predicted_clean.clamp(lower, upper)
             sigma = eta * torch.sqrt(
                 ((1 - alpha_previous) / (1 - alpha)) * (1 - alpha / alpha_previous)
             ).clamp_min(0)
