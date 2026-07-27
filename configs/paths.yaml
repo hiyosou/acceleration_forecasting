@@ -1,0 +1,4 @@
+retrieval_artifact_dir: ../acceleration_retrieval/artifacts_dataset_split
+artifact_dir: artifacts
+trend_source_dir: ../acceleration_retrieval/artifacts
+

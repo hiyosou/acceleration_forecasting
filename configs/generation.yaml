@@ -1,0 +1,27 @@
+seed: 42
+future_months: 18
+history_months: 3
+search_days: 15
+top_k: 3
+max_current_acc_difference: 0.5
+min_valid_guide_months: 12
+min_valid_target_months: 12
+guide_dim: 64
+condition_dim: 128
+time_dim: 128
+diffusion_steps: 1000
+sampling_steps: 50
+ddim_eta: 0.0
+dropout: 0.1
+train:
+  epochs: 200
+  learning_rate: 0.0001
+  min_learning_rate: 0.000001
+  weight_decay: 0.0001
+  warmup_epochs: 5
+  patience: 20
+  min_delta: 0.0001
+  gradient_clip: 1.0
+  effective_batch_size: 256
+  ema_decay: 0.999
+
