@@ -103,6 +103,67 @@ def _query_rows(manifest, split, target_id):
     ]
 
 
+def select_first_eligible_anchors(
+    target_frame,
+    split,
+    query_vector_lookup,
+    *,
+    min_valid_target_months=12,
+    limit=None,
+    progress=True,
+):
+    """Select at most one earliest constructable anchor per dataset."""
+    ordered = target_frame.sort_values(
+        ["dataset_id", "measurement_date", "target_id"], kind="mergesort"
+    )
+    candidate_dataset_count = int(ordered["dataset_id"].nunique())
+    selected = []
+    processed_dataset_count = 0
+    grouped = ordered.groupby("dataset_id", sort=False)
+    dataset_progress = progress_bar(
+        grouped, enabled=progress, total=candidate_dataset_count,
+        desc=f"{split}起点選択", unit="dataset",
+    )
+    for dataset_id, candidates in dataset_progress:
+        if limit is not None and len(selected) >= int(limit):
+            break
+        processed_dataset_count += 1
+        for _, row in candidates.iterrows():
+            current = float(row["current_acc_z_max"])
+            if not np.isfinite(current):
+                continue
+            raw_future, raw_mask = sanitize_future(
+                row["measurement_date"], _json_list(row["future_values"]),
+                _json_list(row["future_mask"]), row.get("cutoff_maintenance_date", ""),
+            )
+            valid_target_months = int(raw_mask.sum())
+            if split != "inference" and valid_target_months < int(min_valid_target_months):
+                continue
+            query_vectors = query_vector_lookup(split, str(row["target_id"]))
+            if not query_vectors:
+                continue
+            selected.append({
+                "row": row,
+                "current": current,
+                "raw_future": raw_future,
+                "raw_mask": raw_mask,
+                "valid_target_months": valid_target_months,
+                "query_vectors": query_vectors,
+            })
+            break
+        dataset_progress.set_postfix(adopted=len(selected), refresh=False)
+    diagnostics = {
+        "candidate_datasets": candidate_dataset_count,
+        "processed_datasets": processed_dataset_count,
+        "adopted_datasets": len(selected),
+        "datasets_without_eligible_anchor": processed_dataset_count - len(selected),
+        "selection_limited": bool(
+            limit is not None and processed_dataset_count < candidate_dataset_count
+        ),
+    }
+    return selected, diagnostics
+
+
 def _save_split(split_dir, metadata, arrays, targets=None):
     split_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(metadata).to_csv(split_dir / "metadata.csv", index=False, encoding="utf-8-sig")
@@ -150,12 +211,12 @@ def prepare_generation_dataset(
     inference_inputs = pd.read_csv(retrieval_dir / "inference_inputs.csv", encoding="utf-8-sig")
     inference_to_encode = inference_inputs
     if max_inference is not None:
-        selected_targets = set(
+        selected_dataset_ids = set(
             inference.sort_values(["dataset_id", "measurement_date", "target_id"], kind="mergesort")
-            .head(int(max_inference))["target_id"].astype(str)
+            .drop_duplicates("dataset_id").head(int(max_inference))["dataset_id"].astype(str)
         )
         inference_to_encode = inference_inputs.loc[
-            inference_inputs["target_id"].astype(str).isin(selected_targets)
+            inference_inputs["dataset_id"].astype(str).isin(selected_dataset_ids)
         ]
     embeddings.update(_encode_missing_embeddings(
         inference_to_encode, retrieval_dir, source_config, device, progress=progress
@@ -167,47 +228,56 @@ def prepare_generation_dataset(
         top_k=int(top_k), max_current_difference=float(max_current_difference),
         min_valid_months=int(min_valid_guide_months), strict_time=True,
     )
-    inference_rows_by_target = {
-        key: group for key, group in inference_inputs.groupby("target_id", sort=False)
+    development_record_ids = {
+        (str(model_split), str(trend_id)): list(group["record_id"].astype(str))
+        for (model_split, trend_id), group in manifest.groupby(
+            ["model_split", "trend_id"], sort=False
+        )
     }
+    inference_record_ids = {
+        str(target_id): list(group["record_id"].astype(str))
+        for target_id, group in inference_inputs.groupby("target_id", sort=False)
+    }
+
+    def query_vector_lookup(split, target_id):
+        record_ids = (
+            inference_record_ids.get(str(target_id), [])
+            if split == "inference"
+            else development_record_ids.get((str(split), str(target_id)), [])
+        )
+        return [embeddings[record_id] for record_id in record_ids if record_id in embeddings]
+
     assignments = []
     summary = {}
+    split_diagnostics = {}
     split_specs = (
         ("model_train", development.loc[development["model_split"] == "model_train"], max_train),
         ("model_validation", development.loc[development["model_split"] == "model_validation"], max_validation),
         ("inference", inference, max_inference),
     )
     for split, target_frame, limit in split_specs:
-        target_frame = target_frame.sort_values(["dataset_id", "measurement_date", "target_id"], kind="mergesort")
-        if limit is not None:
-            target_frame = target_frame.head(int(limit))
+        selected_anchors, diagnostics = select_first_eligible_anchors(
+            target_frame, split, query_vector_lookup,
+            min_valid_target_months=min_valid_target_months,
+            limit=limit, progress=progress,
+        )
+        split_diagnostics[split] = diagnostics
         metadata, arrays = [], {name: [] for name in ARRAY_NAMES}
         target_values, target_masks = [], []
         target_progress = progress_bar(
-            target_frame.iterrows(), enabled=progress, total=len(target_frame),
+            selected_anchors, enabled=progress, total=len(selected_anchors),
             desc=f"{split}生成データ", unit="target",
         )
-        for _, row in target_progress:
-            current = float(row["current_acc_z_max"])
-            if not np.isfinite(current):
-                continue
-            raw_future, raw_mask = sanitize_future(
-                row["measurement_date"], _json_list(row["future_values"]),
-                _json_list(row["future_mask"]), row.get("cutoff_maintenance_date", ""),
-            )
-            valid_target_months = int(raw_mask.sum())
-            if split != "inference" and valid_target_months < int(min_valid_target_months):
-                continue
+        for anchor in target_progress:
+            row = anchor["row"]
+            current = anchor["current"]
+            raw_future = anchor["raw_future"]
+            raw_mask = anchor["raw_mask"]
+            valid_target_months = anchor["valid_target_months"]
+            query_vectors = anchor["query_vectors"]
             history, history_mask, history_dates = select_monthly_history(
                 groups[str(row["dataset_id"])], row["measurement_date"]
             )
-            if split == "inference":
-                query_rows = inference_rows_by_target.get(str(row["target_id"]), pd.DataFrame())
-            else:
-                query_rows = _query_rows(manifest, split, row["target_id"])
-            query_vectors = [embeddings[str(record_id)] for record_id in query_rows.get("record_id", []) if str(record_id) in embeddings]
-            if not query_vectors:
-                continue
             allowed = development_ids if split == "inference" else train_ids
             guides = index.search(
                 np.stack(query_vectors), query_date=pd.Timestamp(row["measurement_date"]).strftime("%Y-%m-%d"),
@@ -272,6 +342,7 @@ def prepare_generation_dataset(
         else:
             _save_split(split_dir, metadata, arrays, (target_values, target_masks))
         summary[split] = len(metadata)
+    summary["split_diagnostics"] = split_diagnostics
     pd.DataFrame(assignments).to_csv(output_dir / "guide_assignments.csv", index=False, encoding="utf-8-sig")
     source = {
         "retrieval_artifact_dir": str(retrieval_dir),
