@@ -6,17 +6,24 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from acceleration_forecasting.common.progress import progress_bar
 from acceleration_forecasting.datasets.generation_dataset import GenerationDataset
 from acceleration_forecasting.evaluation.metrics import evaluate_target
 
 from .sampling import load_ema_checkpoint, sample_one
 
 
-def _evaluate_checkpoint(checkpoint, dataset, normalization, device, num_samples, max_records, seed):
+def _evaluate_checkpoint(
+    checkpoint, dataset, normalization, device, num_samples, max_records, seed,
+    progress=True,
+):
     model, name, _ = load_ema_checkpoint(checkpoint, device)
     rows = []
     count = min(len(dataset), max_records or len(dataset))
-    for index in range(count):
+    for index in progress_bar(
+        range(count), enabled=progress, total=count,
+        desc=f"{name} validation", unit="target", leave=False,
+    ):
         item = dataset[index]
         target_id = str(dataset.metadata.iloc[index]["target_id"])
         batch = {key: value.unsqueeze(0) if hasattr(value, "ndim") and value.ndim > 0 else value for key, value in item.items() if key not in ("target", "target_mask", "index")}
@@ -40,15 +47,23 @@ def _evaluate_checkpoint(checkpoint, dataset, normalization, device, num_samples
     }
 
 
-def select_model(dataset_dir, model_dir, output_dir, *, device=None, num_samples=100, max_records=None, equivalence_threshold=0.01, seed=42):
+def select_model(
+    dataset_dir, model_dir, output_dir, *, device=None, num_samples=100,
+    max_records=None, equivalence_threshold=0.01, seed=42, progress=True,
+):
     dataset_dir, model_dir, output_dir = Path(dataset_dir), Path(model_dir), Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset = GenerationDataset(dataset_dir / "model_validation", dataset_dir / "normalization.json")
     results = []
-    for name in ("mlp", "unet"):
+    model_progress = progress_bar(
+        ("mlp", "unet"), enabled=progress, total=2,
+        desc="モデル選択", unit="model",
+    )
+    for name in model_progress:
+        model_progress.set_postfix(model=name, refresh=False)
         frame, summary = _evaluate_checkpoint(
             model_dir / name / "best_ema_model.pt", dataset, dataset.normalization,
-            device, num_samples, max_records, seed,
+            device, num_samples, max_records, seed, progress=progress,
         )
         frame.to_csv(output_dir / f"{name}_metrics.csv", index=False, encoding="utf-8-sig")
         results.append(summary)

@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from acceleration_forecasting.common.progress import progress_bar, progress_message
 from acceleration_forecasting.datasets.normalization import AccelerationNormalization
 
 from .bootstrap import confidence_intervals, dataset_bootstrap
@@ -36,6 +37,7 @@ def evaluate(
     plot_max_targets=100,
     y_max=5.0,
     dpi=150,
+    progress=True,
 ):
     dataset_dir, prediction_dir, output_dir = map(Path, (dataset_dir, prediction_dir, output_dir))
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -46,7 +48,11 @@ def evaluate(
     target_lookup = {str(value): index for index, value in enumerate(target_ids["target_id"].astype(str))}
     predictions = pd.read_csv(prediction_dir / "predictions.csv", encoding="utf-8-sig")
     per_target, monthly = [], []
-    for target_id, group in predictions.groupby(predictions["target_id"].astype(str), sort=False):
+    prediction_groups = predictions.groupby(predictions["target_id"].astype(str), sort=False)
+    for target_id, group in progress_bar(
+        prediction_groups, enabled=progress, total=predictions["target_id"].astype(str).nunique(),
+        desc="評価指標を計算", unit="target",
+    ):
         if target_id not in target_lookup:
             continue
         index = target_lookup[target_id]
@@ -79,6 +85,7 @@ def evaluate(
     monthly_frame = pd.DataFrame(monthly)
     per_target_frame.to_csv(output_dir / "evaluation_per_target.csv", index=False, encoding="utf-8-sig")
     monthly_frame.to_csv(output_dir / "evaluation_per_month_records.csv", index=False, encoding="utf-8-sig")
+    progress_message("月別・条件別の評価を集計中", enabled=progress)
     month_summary = monthly_frame.groupby("month_index").agg(
         MAE=("absolute_error", "mean"), coverage_p10_p90=("inside_interval", "mean"), target_count=("target_id", "count")
     ).reset_index()
@@ -110,7 +117,9 @@ def evaluate(
                 "mean_interval_width": group["mean_interval_width"].mean(),
             })
     pd.DataFrame(grouped_rows).to_csv(output_dir / "evaluation_by_group.csv", index=False, encoding="utf-8-sig")
-    bootstrap = dataset_bootstrap(per_target_frame, bootstrap_iterations, seed)
+    bootstrap = dataset_bootstrap(
+        per_target_frame, bootstrap_iterations, seed, progress=progress
+    )
     bootstrap.to_csv(output_dir / "bootstrap_results.csv", index=False, encoding="utf-8-sig")
     metric_columns = ["MAE", "RMSE", "correlation", "peak_value_error", "peak_month_error", "coverage_p10_p90", "mean_interval_width"]
     summary = {column: float(per_target_frame[column].mean(skipna=True)) for column in metric_columns}
@@ -128,7 +137,10 @@ def evaluate(
         selected = per_target_frame.sort_values("RMSE", ascending=False).head(int(plot_max_targets))["target_id"].astype(str).tolist()
         sample_map = load_sample_map(prediction_dir / "samples", selected)
         meta_lookup = {str(row.target_id): (index, row._asdict()) for index, row in enumerate(metadata.itertuples(index=False))}
-        for target_id in selected:
+        for target_id in progress_bar(
+            selected, enabled=progress, total=len(selected),
+            desc="評価画像を生成", unit="image",
+        ):
             if target_id not in sample_map or target_id not in meta_lookup:
                 continue
             data_index, meta = meta_lookup[target_id]

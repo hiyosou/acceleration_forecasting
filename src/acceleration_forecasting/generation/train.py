@@ -11,6 +11,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 
 from acceleration_forecasting.common.reproducibility import set_seed
+from acceleration_forecasting.common.progress import progress_bar, progress_message
 from acceleration_forecasting.datasets.generation_dataset import GenerationDataset
 
 from .diffusion import create_model
@@ -33,10 +34,13 @@ def _fixed_validation(dataset, seed, steps):
 
 
 @torch.no_grad()
-def _validate(model, loader, device, timesteps, noise):
+def _validate(model, loader, device, timesteps, noise, progress=True):
     model.eval()
     losses = []
-    for batch in loader:
+    for batch in progress_bar(
+        loader, enabled=progress, total=len(loader), desc="validation",
+        unit="batch", leave=False,
+    ):
         indices = batch["index"].long()
         batch = move_batch(batch, device)
         losses.append(
@@ -64,6 +68,7 @@ def train_model(
     ema_decay=0.999,
     seed=42,
     resume=True,
+    progress=True,
 ):
     set_seed(seed)
     device = choose_device(device)
@@ -106,22 +111,40 @@ def train_model(
         start_epoch = int(checkpoint["epoch"]) + 1
         best_loss = float(checkpoint["best_validation_loss"])
         stale = int(checkpoint.get("stale_epochs", 0))
+        progress_message(
+            f"{model_name}: epoch {start_epoch}/{epochs} から再開 "
+            f"(best validation loss={best_loss:.6f})",
+            enabled=progress,
+        )
     valid_t, valid_noise = _fixed_validation(valid_data, seed, model.steps)
     history = []
     history_path = output / "training_history.csv"
     if history_path.is_file() and start_epoch:
         history = pd.read_csv(history_path).to_dict("records")
-    for epoch in range(start_epoch, int(epochs)):
+    epoch_progress = progress_bar(
+        range(start_epoch, int(epochs)), enabled=progress, total=int(epochs),
+        initial=start_epoch, desc=f"{model_name} 学習", unit="epoch",
+    )
+    for epoch in epoch_progress:
         started = time.time()
         model.train()
         optimizer.zero_grad(set_to_none=True)
         train_losses, gradient_norms = [], []
-        for step, batch in enumerate(train_loader):
+        batch_progress = progress_bar(
+            train_loader, enabled=progress, total=len(train_loader),
+            desc=f"epoch {epoch + 1}/{epochs}", unit="batch", leave=False,
+        )
+        last_progress_update = time.monotonic()
+        for step, batch in enumerate(batch_progress):
             batch = move_batch(batch, device)
             with _autocast(device):
                 loss = model.masked_loss(batch) / accumulation
             scaler.scale(loss).backward()
             train_losses.append(float(loss.detach()) * accumulation)
+            now = time.monotonic()
+            if progress and now - last_progress_update >= 1.0:
+                batch_progress.set_postfix(loss=f"{train_losses[-1]:.6f}", refresh=False)
+                last_progress_update = now
             if (step + 1) % accumulation == 0 or step + 1 == len(train_loader):
                 scaler.unscale_(optimizer)
                 norm = clip_grad_norm_(model.parameters(), gradient_clip)
@@ -130,7 +153,9 @@ def train_model(
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
                 ema.update(model)
-        validation_loss = _validate(ema.model, valid_loader, device, valid_t, valid_noise)
+        validation_loss = _validate(
+            ema.model, valid_loader, device, valid_t, valid_noise, progress=progress
+        )
         scheduler.step()
         improved = validation_loss < best_loss - min_delta
         if improved:
@@ -155,6 +180,13 @@ def train_model(
             "elapsed_seconds": time.time() - started, "is_best": improved,
         })
         pd.DataFrame(history).to_csv(history_path, index=False, encoding="utf-8-sig")
+        epoch_progress.set_postfix(
+            train=f"{history[-1]['train_loss']:.6f}",
+            validation=f"{validation_loss:.6f}", best=f"{best_loss:.6f}",
+            lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+            patience_left=max(0, patience - stale),
+            elapsed=f"{history[-1]['elapsed_seconds']:.1f}s", refresh=False,
+        )
         if stale >= patience:
             break
     resolved = {

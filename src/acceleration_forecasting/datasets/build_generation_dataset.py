@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
+from acceleration_forecasting.common.progress import progress_bar
 
 from acceleration_forecasting.retrieval.guide_index import GuideIndex
 from acceleration_forecasting.retrieval.guide_search import GuideSearchConfig
@@ -40,7 +40,7 @@ def _load_embeddings_from_db(connection):
     }
 
 
-def _encode_missing_embeddings(rows, retrieval_dir, source_config, device, batch_size=512):
+def _encode_missing_embeddings(rows, retrieval_dir, source_config, device, batch_size=512, progress=True):
     if rows.empty:
         return {}
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -58,7 +58,11 @@ def _encode_missing_embeddings(rows, retrieval_dir, source_config, device, batch
     output = {}
     records = list(rows.loc[:, ["record_id", "waveform_index"]].itertuples(index=False))
     with torch.no_grad():
-        for start in tqdm(range(0, len(records), batch_size), desc="inference波形をベクトル化"):
+        for start in progress_bar(
+            range(0, len(records), batch_size), enabled=progress,
+            total=(len(records) + batch_size - 1) // batch_size,
+            desc="inference波形をベクトル化", unit="batch",
+        ):
             batch = records[start:start + batch_size]
             values = np.stack([waveforms[int(item.waveform_index)] for item in batch]).copy()
             tensor = torch.from_numpy((values - mean) / std).unsqueeze(1).to(device)
@@ -121,6 +125,7 @@ def prepare_generation_dataset(
     max_train=None,
     max_validation=None,
     max_inference=None,
+    progress=True,
 ):
     retrieval_dir = Path(retrieval_artifact_dir).resolve()
     output_dir = Path(output_dir).resolve()
@@ -152,7 +157,9 @@ def prepare_generation_dataset(
         inference_to_encode = inference_inputs.loc[
             inference_inputs["target_id"].astype(str).isin(selected_targets)
         ]
-    embeddings.update(_encode_missing_embeddings(inference_to_encode, retrieval_dir, source_config, device))
+    embeddings.update(_encode_missing_embeddings(
+        inference_to_encode, retrieval_dir, source_config, device, progress=progress
+    ))
 
     train_ids = set(development.loc[development["model_split"] == "model_train", "dataset_id"].astype(str))
     development_ids = set(development["dataset_id"].astype(str))
@@ -176,7 +183,11 @@ def prepare_generation_dataset(
             target_frame = target_frame.head(int(limit))
         metadata, arrays = [], {name: [] for name in ARRAY_NAMES}
         target_values, target_masks = [], []
-        for _, row in tqdm(target_frame.iterrows(), total=len(target_frame), desc=f"{split}生成データ"):
+        target_progress = progress_bar(
+            target_frame.iterrows(), enabled=progress, total=len(target_frame),
+            desc=f"{split}生成データ", unit="target",
+        )
+        for _, row in target_progress:
             current = float(row["current_acc_z_max"])
             if not np.isfinite(current):
                 continue
@@ -249,6 +260,7 @@ def prepare_generation_dataset(
                 arrays[name].append(value)
             target_values.append(raw_future)
             target_masks.append(raw_mask)
+        target_progress.set_postfix(adopted=len(metadata), refresh=progress)
         split_dir = output_dir / split
         if split == "inference":
             _save_split(split_dir / "inputs", metadata, arrays)

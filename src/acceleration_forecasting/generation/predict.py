@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from acceleration_forecasting.common.progress import progress_bar, progress_message
 from acceleration_forecasting.datasets.generation_dataset import GenerationDataset
 
 from .sampling import load_ema_checkpoint, sample_one
@@ -33,6 +34,7 @@ def predict(
     save_samples=True,
     chunk_size=100,
     max_records=None,
+    progress=True,
 ):
     started = time.time()
     dataset_dir, output_dir = Path(dataset_dir), Path(output_dir)
@@ -52,6 +54,16 @@ def predict(
         sample_dir.mkdir(parents=True, exist_ok=True)
     pending_samples, pending_ids, chunk_index = [], [], len(list(sample_dir.glob("samples_*.npz")))
     count = min(len(dataset), max_records or len(dataset))
+    scoped_ids = set(dataset.metadata.iloc[:count]["target_id"].astype(str))
+    completed_in_scope = len(completed & scoped_ids)
+    progress_message(
+        f"推論対象={count}, 完了済み={completed_in_scope}, 未処理={count - completed_in_scope}",
+        enabled=progress,
+    )
+    target_progress = progress_bar(
+        enabled=progress, total=count, initial=completed_in_scope,
+        desc=f"{model_name} 推論", unit="target",
+    )
     for index in range(count):
         meta = dataset.metadata.iloc[index]
         target_id = str(meta["target_id"])
@@ -85,12 +97,17 @@ def predict(
             pending_ids.append(target_id)
             pending_samples.append(samples.astype(np.float32))
             if len(pending_ids) >= chunk_size:
+                target_progress.set_postfix(state="保存中", refresh=progress)
                 np.savez_compressed(sample_dir / f"samples_{chunk_index:05d}.npz", target_ids=np.asarray(pending_ids), samples=np.stack(pending_samples))
                 pending_ids, pending_samples, chunk_index = [], [], chunk_index + 1
         if len(completed) % chunk_size == 0:
             pd.DataFrame(rows).drop_duplicates(["target_id", "month_index"], keep="last").to_csv(prediction_path, index=False, encoding="utf-8-sig")
+        target_progress.set_postfix(state="推論中", refresh=False)
+        target_progress.update(1)
     if pending_ids:
+        target_progress.set_postfix(state="保存中", refresh=progress)
         np.savez_compressed(sample_dir / f"samples_{chunk_index:05d}.npz", target_ids=np.asarray(pending_ids), samples=np.stack(pending_samples))
+    target_progress.close()
     final = pd.DataFrame(rows).drop_duplicates(["target_id", "month_index"], keep="last")
     final.to_csv(prediction_path, index=False, encoding="utf-8-sig")
     assignments = dataset_dir / "guide_assignments.csv"
@@ -106,4 +123,3 @@ def predict(
     }
     (output_dir / "prediction_run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     return run
-

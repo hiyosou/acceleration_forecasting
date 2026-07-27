@@ -22,6 +22,9 @@ uv run python -m acceleration_forecasting.cli predict --use-selected-model --num
 uv run python -m acceleration_forecasting.cli evaluate --bootstrap 1000 --plot
 ```
 
+Progress bars are written to stderr and do not change the final JSON written to
+stdout. Add `--no-progress` to any forecasting command to disable them.
+
 For an end-to-end smoke test, add `--max-train 1000 --max-validation 200
 --max-inference 100` to `prepare-generation`, and use the CLI epoch and record-limit
 options before running the complete dataset. Run the automated tests with:

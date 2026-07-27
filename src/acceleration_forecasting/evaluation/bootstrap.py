@@ -3,20 +3,27 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from acceleration_forecasting.common.progress import progress_bar
+
 
 DEFAULT_METRICS = (
     "MAE", "RMSE", "coverage_p10_p90", "mean_interval_width", "peak_value_error"
 )
 
 
-def dataset_bootstrap(frame, iterations=1000, seed=42, metrics=DEFAULT_METRICS):
+def dataset_bootstrap(
+    frame, iterations=1000, seed=42, metrics=DEFAULT_METRICS, progress=True,
+):
     dataset_ids = frame["dataset_id"].dropna().astype(str).unique()
     if not len(dataset_ids):
         return pd.DataFrame()
     groups = {key: group for key, group in frame.groupby(frame["dataset_id"].astype(str))}
     generator = np.random.default_rng(seed)
     rows = []
-    for iteration in range(int(iterations)):
+    for iteration in progress_bar(
+        range(int(iterations)), enabled=progress, total=int(iterations),
+        desc="dataset_id Bootstrap", unit="iteration", leave=False,
+    ):
         selected = generator.choice(dataset_ids, size=len(dataset_ids), replace=True)
         sampled = pd.concat([groups[key] for key in selected], ignore_index=True)
         row = {"iteration": iteration}
@@ -34,4 +41,3 @@ def confidence_intervals(bootstrap_frame, metrics=DEFAULT_METRICS):
             result[f"{metric}_ci_lower"] = float(np.percentile(values, 2.5))
             result[f"{metric}_ci_upper"] = float(np.percentile(values, 97.5))
     return result
-
