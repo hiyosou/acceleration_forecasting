@@ -38,6 +38,8 @@ def evaluate(
     y_max=5.0,
     dpi=150,
     plot_output_dir=None,
+    plot_style="detailed",
+    single_sample_index=None,
     progress=True,
 ):
     dataset_dir, prediction_dir, output_dir = map(Path, (dataset_dir, prediction_dir, output_dir))
@@ -164,5 +166,7 @@ def evaluate(
                 meta, relevant, predictions.loc[predictions["target_id"].astype(str) == target_id],
                 target_values[target_index], target_masks[target_index], guide_values[data_index], guide_masks[data_index],
                 guides.loc[guides["target_id"].astype(str) == target_id], sample_map[target_id], y_max, dpi,
+                plot_style=plot_style,
+                single_sample_index=single_sample_index,
             )
     return summary

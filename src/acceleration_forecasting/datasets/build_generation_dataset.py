@@ -330,7 +330,12 @@ def prepare_generation_dataset(
                 retrieval_masks[rank] = 1
                 assignments.append({
                     "split": split, "target_id": row["target_id"], "guide_rank": rank + 1,
+                    "query_date": pd.Timestamp(row["measurement_date"]).strftime("%Y-%m-%d"),
+                    "query_dataset_id": str(row["dataset_id"]),
                     "query_waveform_count": len(query_vectors), "guide_record_id": guide["record_id"],
+                    "candidate_dataset_id": str(guide["dataset_id"]),
+                    "candidate_direction": str(guide["direction"]),
+                    "candidate_bin_end_m": float(guide["bin_end_m"]),
                     "guide_trend_id": guide["trend_id"], "guide_date": guide["measurement_date"],
                     "cosine_similarity": guide["similarity"], "query_current_acc_z_max": current,
                     "guide_current_acc_z_max": guide["current_acc_z_max"],
@@ -347,6 +352,8 @@ def prepare_generation_dataset(
                 assignments.append({
                     "split": split, "target_id": row["target_id"],
                     "guide_rank": rank + 1, "query_waveform_count": len(query_vectors),
+                    "query_date": pd.Timestamp(row["measurement_date"]).strftime("%Y-%m-%d"),
+                    "query_dataset_id": str(row["dataset_id"]),
                     "query_bin_start_m": float(row["bin_start_m"]),
                     "selection_status": "not_found",
                 })

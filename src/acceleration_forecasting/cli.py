@@ -60,6 +60,14 @@ def build_parser():
     evaluate.add_argument("--prediction-dir", default=str(DEFAULT_ARTIFACTS / "predictions"))
     evaluate.add_argument("--output-dir", default=str(DEFAULT_ARTIFACTS / "evaluation"))
     evaluate.add_argument("--plot-output-dir")
+    evaluate.add_argument(
+        "--plot-style", choices=("detailed", "clean"), default="detailed",
+        help="detailed: ガイド詳細を表示、clean: ガイド凡例・注記を非表示",
+    )
+    evaluate.add_argument(
+        "--single-sample-index", type=int,
+        help="保存済み生成系列の指定indexを代表例として重ね描画（0始まり）",
+    )
     evaluate.add_argument("--bootstrap", type=int, default=1000)
     evaluate.add_argument("--plot", action="store_true")
     evaluate.add_argument("--plot-max-targets", type=int, default=100)
@@ -108,6 +116,8 @@ def main(argv=None):
             bootstrap_iterations=args.bootstrap, plot=args.plot,
             plot_max_targets=args.plot_max_targets, y_max=args.y_max, dpi=args.dpi,
             plot_output_dir=args.plot_output_dir,
+            plot_style=args.plot_style,
+            single_sample_index=args.single_sample_index,
             progress=not args.no_progress,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
