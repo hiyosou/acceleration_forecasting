@@ -101,6 +101,14 @@ def build_parser():
     summary.add_argument("--selection-file", required=True)
     summary.add_argument("--evaluation-dir", required=True)
     summary.add_argument("--output-dir", required=True)
+
+    guide_plots = commands.add_parser("plot-guides", help="Plot retrieved dataset progressions")
+    guide_plots.add_argument("--dataset-dir", required=True)
+    guide_plots.add_argument("--prediction-dir", required=True)
+    guide_plots.add_argument("--output-dir", required=True)
+    guide_plots.add_argument("--y-max", type=float, default=5.0)
+    guide_plots.add_argument("--dpi", type=int, default=150)
+    guide_plots.add_argument("--no-progress", action="store_true")
     return parser
 
 
@@ -166,10 +174,16 @@ def main(argv=None):
             args.baseline_prediction_dir, args.residual_prediction_dir,
             args.dataset_dir, args.output_dir, max_images=args.max_images, dpi=args.dpi,
         )
-    else:
+    elif args.command == "summarize-residual":
         from .evaluation.experiment_summary import summarize_residual_experiment
         result = summarize_residual_experiment(
             args.selection_file, args.evaluation_dir, args.output_dir,
+        )
+    else:
+        from .evaluation.plot_guide_progressions import plot_guide_progressions
+        result = plot_guide_progressions(
+            args.dataset_dir, args.prediction_dir, args.output_dir,
+            y_max=args.y_max, dpi=args.dpi, progress=not args.no_progress,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
