@@ -67,3 +67,17 @@ def fit_sampling_bounds(
         normalized_max=float(normalized[1]),
         valid_training_value_count=int(physical.size),
     )
+
+
+def fit_residual_sampling_bounds(dataset_dir):
+    dataset_dir = Path(dataset_dir)
+    config = json.loads((dataset_dir / "residual_config.json").read_text(encoding="utf-8"))
+    values = np.load(dataset_dir / "model_train" / "target_values.npy", mmap_mode="r")
+    masks = np.load(dataset_dir / "model_train" / "target_masks.npy", mmap_mode="r")
+    count = int(((np.asarray(masks) > 0) & np.isfinite(values)).sum())
+    physical_min, physical_max = map(float, config["residual_clip_physical"])
+    normalized_min, normalized_max = map(float, config["residual_clip_normalized"])
+    return SamplingBounds(
+        physical_min, physical_max, normalized_min, normalized_max, count,
+        source_split="model_train", bounds_policy="residual_train_quantile_symmetric",
+    )

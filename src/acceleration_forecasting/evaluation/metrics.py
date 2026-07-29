@@ -20,6 +20,7 @@ def evaluate_target(actual, mask, median, p10, p90):
     return {
         "valid_months": int(valid.sum()),
         "MAE": float(np.mean(np.abs(error))),
+        "MSE": float(np.mean(error**2)),
         "RMSE": float(np.sqrt(np.mean(error**2))),
         "correlation": correlation,
         "peak_value_error": float(abs(prediction[predicted_peak_local] - truth[actual_peak_local])),
@@ -27,4 +28,3 @@ def evaluate_target(actual, mask, median, p10, p90):
         "coverage_p10_p90": float(np.mean((truth >= p10[valid]) & (truth <= p90[valid]))),
         "mean_interval_width": float(np.mean((p90 - p10)[valid])),
     }
-

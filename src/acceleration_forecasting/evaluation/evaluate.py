@@ -124,7 +124,7 @@ def evaluate(
         per_target_frame, bootstrap_iterations, seed, progress=progress
     )
     bootstrap.to_csv(output_dir / "bootstrap_results.csv", index=False, encoding="utf-8-sig")
-    metric_columns = ["MAE", "RMSE", "correlation", "peak_value_error", "peak_month_error", "coverage_p10_p90", "mean_interval_width"]
+    metric_columns = ["MAE", "MSE", "RMSE", "correlation", "peak_value_error", "peak_month_error", "coverage_p10_p90", "mean_interval_width"]
     summary = {column: float(per_target_frame[column].mean(skipna=True)) for column in metric_columns}
     summary.update(confidence_intervals(bootstrap))
     summary.update({"target_count": int(len(per_target_frame)), "bootstrap_iterations": int(bootstrap_iterations), "seed": seed})
@@ -142,6 +142,8 @@ def evaluate(
         history = _actual_history(retrieval_dir)
         guide_values = np.load(dataset_dir / "inference" / "inputs" / "guide_values.npy", mmap_mode="r")
         guide_masks = np.load(dataset_dir / "inference" / "inputs" / "guide_masks.npy", mmap_mode="r")
+        baseline_path = dataset_dir / "inference" / "inputs" / "guide_baselines.npy"
+        guide_baselines = np.load(baseline_path, mmap_mode="r") if baseline_path.is_file() else None
         guides = pd.read_csv(prediction_dir / "prediction_guides.csv", encoding="utf-8-sig")
         selected = per_target_frame.sort_values("RMSE", ascending=False).head(int(plot_max_targets))["target_id"].astype(str).tolist()
         sample_map = load_sample_map(prediction_dir / "samples", selected)
@@ -168,5 +170,6 @@ def evaluate(
                 guides.loc[guides["target_id"].astype(str) == target_id], sample_map[target_id], y_max, dpi,
                 plot_style=plot_style,
                 single_sample_index=single_sample_index,
+                guide_baseline=(guide_baselines[data_index] if guide_baselines is not None else None),
             )
     return summary

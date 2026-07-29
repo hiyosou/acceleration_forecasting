@@ -67,6 +67,7 @@ def train_model(
     effective_batch_size=256,
     ema_decay=0.999,
     seed=42,
+    dropout=0.1,
     resume=True,
     progress=True,
 ):
@@ -89,7 +90,8 @@ def train_model(
     generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, generator=generator, num_workers=0)
     valid_loader = DataLoader(valid_data, batch_size=batch_size, shuffle=False, num_workers=0)
-    model = create_model(model_name).to(device)
+    model_kwargs = {"dropout": float(dropout)}
+    model = create_model(model_name, **model_kwargs).to(device)
     ema = EMA(model, ema_decay)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     use_fp16_scaler = device.type == "cuda" and not torch.cuda.is_bf16_supported()
@@ -180,6 +182,7 @@ def train_model(
             "scaler_state_dict": scaler.state_dict(),
             "best_validation_loss": best_loss, "stale_epochs": stale, "seed": seed,
             "dataset_build_id": dataset_build_id,
+            "model_kwargs": model_kwargs,
         }
         torch.save(state, last_path)
         if improved:
@@ -187,6 +190,7 @@ def train_model(
             torch.save({
                 "model_name": model_name, "model_state_dict": ema.state_dict(),
                 "epoch": epoch, "seed": seed, "dataset_build_id": dataset_build_id,
+                "model_kwargs": model_kwargs,
             }, output / "best_ema_model.pt")
         history.append({
             "epoch": epoch, "train_loss": sum(train_losses) / max(len(train_losses), 1),
@@ -210,6 +214,7 @@ def train_model(
         "learning_rate": learning_rate, "weight_decay": weight_decay, "ema_decay": ema_decay,
         "seed": seed, "device": str(device), "best_validation_loss": best_loss,
         "dataset_build_id": dataset_build_id,
+        "dropout": float(dropout),
     }
     (output / "resolved_config.json").write_text(json.dumps(resolved, indent=2), encoding="utf-8")
     return resolved

@@ -39,6 +39,7 @@ def plot_evaluation(
     dpi=150,
     plot_style="detailed",
     single_sample_index=None,
+    guide_baseline=None,
 ):
     if plot_style not in {"detailed", "clean"}:
         raise ValueError(f"Unsupported plot style: {plot_style}")
@@ -109,6 +110,8 @@ def plot_evaluation(
             )
     top.fill_between(future_dates, p10, p90, color="red", alpha=0.15, label="予測 p10–p90")
     top.plot(future_dates, median, "o-", color="red", linewidth=2, markersize=4, label="予測中央値")
+    if guide_baseline is not None:
+        top.plot(future_dates, guide_baseline, color="darkorange", linewidth=2, label="Guide baseline")
     if selected_sample is not None:
         top.plot(
             future_dates, selected_sample, "x-.", color="darkorange",
@@ -168,6 +171,8 @@ def plot_evaluation(
         bottom.plot(months, sample, color="red", alpha=0.04, linewidth=0.7)
     bottom.fill_between(months, p10, p90, color="red", alpha=0.15)
     bottom.plot(months, median, color="red", linewidth=2, label="予測中央値")
+    if guide_baseline is not None:
+        bottom.plot(months, guide_baseline, color="darkorange", linewidth=2, label="Guide baseline")
     if selected_sample is not None:
         bottom.plot(
             months, selected_sample, "x-.", color="darkorange",

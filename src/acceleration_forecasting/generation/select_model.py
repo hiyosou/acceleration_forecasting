@@ -12,7 +12,7 @@ from acceleration_forecasting.datasets.generation_dataset import GenerationDatas
 from acceleration_forecasting.evaluation.metrics import evaluate_target
 
 from .sampling import load_ema_checkpoint, sample_one
-from .sampling_bounds import fit_sampling_bounds
+from .sampling_bounds import fit_sampling_bounds, fit_residual_sampling_bounds
 
 
 def _evaluate_checkpoint(
@@ -33,9 +33,9 @@ def _evaluate_checkpoint(
             model, batch, target_id, num_samples=num_samples, seed=seed,
             clean_clip=clean_clip,
         )
-        samples = normalization.denormalize(normalized, clip_nonnegative=True)
+        samples = dataset.denormalize_prediction(normalized, index)
         median = np.median(samples, axis=0)
-        actual = normalization.denormalize(item["target"].numpy(), clip_nonnegative=True)
+        actual = dataset.physical_target(index)
         mask = item["target_mask"].numpy().astype(bool)
         p10, p90 = np.percentile(samples, [10, 90], axis=0)
         metrics = evaluate_target(actual, mask, median, p10, p90)
@@ -49,6 +49,7 @@ def _evaluate_checkpoint(
     frame = pd.DataFrame(rows)
     return frame, {
         "model_name": name, "MAE": float(frame["MAE"].mean()),
+        "MSE": float(frame["MSE"].mean()),
         "RMSE": float(frame["RMSE"].mean()),
         "coverage_p10_p90": float(frame["coverage_p10_p90"].mean()),
         "mean_interval_width": float(frame["mean_interval_width"].mean()),
@@ -65,13 +66,16 @@ def _evaluate_checkpoint(
 def select_model(
     dataset_dir, model_dir, output_dir, *, device=None, num_samples=100,
     max_records=None, equivalence_threshold=0.01, seed=42, progress=True,
+    candidates=("mlp", "unet"), mae_limit=None, coverage_min=None,
+    interval_width_limit=None,
 ):
     dataset_dir, model_dir, output_dir = Path(dataset_dir), Path(model_dir), Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     search_config_path = dataset_dir / "guide_search_config.json"
     search_config = json.loads(search_config_path.read_text(encoding="utf-8"))
     dataset_build_id = search_config["dataset_build_id"]
-    for name in ("mlp", "unet"):
+    candidates = tuple(candidates)
+    for name in candidates:
         checkpoint_path = model_dir / name / "best_ema_model.pt"
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if checkpoint.get("dataset_build_id") != dataset_build_id:
@@ -79,11 +83,15 @@ def select_model(
                 f"{name} checkpoint was trained with a different guide search configuration"
             )
     dataset = GenerationDataset(dataset_dir / "model_validation", dataset_dir / "normalization.json")
-    sampling_bounds = fit_sampling_bounds(dataset_dir)
+    residual_mode = (dataset_dir / "residual_config.json").is_file()
+    sampling_bounds = (
+        fit_residual_sampling_bounds(dataset_dir) if residual_mode
+        else fit_sampling_bounds(dataset_dir)
+    )
     sampling_bounds.save(output_dir / "sampling_bounds.json")
     results = []
     model_progress = progress_bar(
-        ("mlp", "unet"), enabled=progress, total=2,
+        candidates, enabled=progress, total=len(candidates),
         desc="モデル選択", unit="model",
     )
     for name in model_progress:
@@ -97,38 +105,46 @@ def select_model(
         results.append(summary)
     comparison = pd.DataFrame(results)
     comparison.to_csv(output_dir / "model_comparison.csv", index=False, encoding="utf-8-sig")
-    mlp, unet = results
-    difference = abs(mlp["MAE"] - unet["MAE"])
-    if difference < equivalence_threshold:
-        selected, reason = "mlp", "MAE difference below threshold; simpler MLP preferred"
+    if len(results) == 1:
+        selected = results[0]["model_name"]
+        reason = f"only {selected} was requested"
+        difference = 0.0
+        mlp_mae = None
+        unet_mae = results[0]["MAE"] if selected == "unet" else None
     else:
-        selected = min(results, key=lambda item: item["MAE"])["model_name"]
-        reason = f"{selected} had lower validation MAE by at least {equivalence_threshold}"
+        mlp, unet = results
+        mlp_mae, unet_mae = mlp["MAE"], unet["MAE"]
+        difference = abs(mlp_mae - unet_mae)
+        if difference < equivalence_threshold:
+            selected, reason = "mlp", "MAE difference below threshold; simpler MLP preferred"
+        else:
+            selected = min(results, key=lambda item: item["MAE"])["model_name"]
+            reason = f"{selected} had lower validation MAE by at least {equivalence_threshold}"
     selected_summary = next(item for item in results if item["model_name"] == selected)
     tolerance = 1e-6
     quality_checks = {
         "all_samples_finite": bool(selected_summary["samples_finite"]),
         "quantiles_ordered": bool(selected_summary["quantiles_ordered"]),
         "samples_within_physical_bounds": bool(
-            selected_summary["sample_min"] >= sampling_bounds.physical_min - tolerance
-            and selected_summary["sample_max"] <= sampling_bounds.physical_max + tolerance
+            selected_summary["sample_min"] >= 0.3 - tolerance
+            and selected_summary["sample_max"] <= 5.0 + tolerance
         ),
-        "mae_within_training_std": bool(selected_summary["MAE"] <= dataset.normalization.std),
-        "interval_width_within_training_range": bool(
-            selected_summary["mean_interval_width"] <= sampling_bounds.physical_width
-        ),
+        "mae_within_limit": bool(selected_summary["MAE"] <= (mae_limit if mae_limit is not None else dataset.condition_normalization.std)),
+        "coverage_within_limit": bool(coverage_min is None or selected_summary["coverage_p10_p90"] >= coverage_min),
+        "interval_width_within_limit": bool(selected_summary["mean_interval_width"] < (interval_width_limit if interval_width_limit is not None else 4.7)),
     }
     quality_gate = {
         "passed": bool(all(quality_checks.values())),
         "checks": quality_checks,
-        "mae_limit": float(dataset.normalization.std),
-        "interval_width_limit": float(sampling_bounds.physical_width),
+        "mae_limit": float(mae_limit if mae_limit is not None else dataset.condition_normalization.std),
+        "coverage_min": coverage_min,
+        "interval_width_limit": float(interval_width_limit if interval_width_limit is not None else 4.7),
     }
     payload = {
         "selected_model": selected,
         "selected_checkpoint": str((model_dir / selected / "best_ema_model.pt").resolve()),
         "selection_split": "model_validation", "primary_metric": "MAE",
-        "mlp_mae": mlp["MAE"], "unet_mae": unet["MAE"],
+        "mlp_mae": mlp_mae, "unet_mae": unet_mae,
         "mae_difference": difference, "equivalence_threshold": equivalence_threshold,
         "selection_reason": reason, "selected_metrics": selected_summary, "seed": seed,
         "sampling_bounds": sampling_bounds.to_dict(),
@@ -136,6 +152,8 @@ def select_model(
         "quality_gate": quality_gate,
         "dataset_build_id": dataset_build_id,
         "guide_search_settings": search_config,
+        "residual_mode": residual_mode,
+        "final_physical_bounds": [0.3, 5.0],
     }
     (output_dir / "selected_model.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (output_dir / "selected_model.txt").write_text(

@@ -15,7 +15,7 @@ def load_ema_checkpoint(path, device=None):
     device = choose_device(device)
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     model_name = checkpoint["model_name"]
-    model = create_model(model_name).to(device)
+    model = create_model(model_name, **checkpoint.get("model_kwargs", {})).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model, model_name, device

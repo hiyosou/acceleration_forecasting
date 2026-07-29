@@ -24,6 +24,13 @@ def build_parser():
     prepare.add_argument("--max-inference", type=int)
     prepare.add_argument("--no-progress", action="store_true")
 
+    residual = commands.add_parser("prepare-residual", help="Build guide-baseline residual datasets")
+    residual.add_argument("--source-dataset-dir", required=True)
+    residual.add_argument("--output-dir", required=True)
+    residual.add_argument("--temperature", type=float, default=0.1)
+    residual.add_argument("--clip-quantile-low", type=float, default=0.5)
+    residual.add_argument("--clip-quantile-high", type=float, default=99.5)
+
     train = commands.add_parser("train", help="MLPまたはU-Net拡散モデルを学習")
     train.add_argument("--model", choices=("mlp", "unet"), required=True)
     train.add_argument("--dataset-dir", default=str(DEFAULT_ARTIFACTS / "datasets"))
@@ -33,6 +40,7 @@ def build_parser():
     train.add_argument("--batch-size", type=int)
     train.add_argument("--no-resume", action="store_true")
     train.add_argument("--no-progress", action="store_true")
+    train.add_argument("--dropout", type=float, default=0.1)
 
     select = commands.add_parser("select-model", help="validationで正式モデルを選択")
     select.add_argument("--dataset-dir", default=str(DEFAULT_ARTIFACTS / "datasets"))
@@ -42,6 +50,10 @@ def build_parser():
     select.add_argument("--num-samples", type=int, default=100)
     select.add_argument("--max-records", type=int)
     select.add_argument("--no-progress", action="store_true")
+    select.add_argument("--model", choices=("mlp", "unet"), action="append")
+    select.add_argument("--mae-limit", type=float)
+    select.add_argument("--coverage-min", type=float)
+    select.add_argument("--interval-width-limit", type=float)
 
     predict = commands.add_parser("predict", help="選択モデルで正式inferenceを実行")
     predict.add_argument("--dataset-dir", default=str(DEFAULT_ARTIFACTS / "datasets"))
@@ -74,6 +86,21 @@ def build_parser():
     evaluate.add_argument("--y-max", type=float, default=5.0)
     evaluate.add_argument("--dpi", type=int, default=150)
     evaluate.add_argument("--no-progress", action="store_true")
+
+    compare = commands.add_parser("compare", help="Compare one-anchor and residual predictions")
+    compare.add_argument("--baseline-evaluation-dir", required=True)
+    compare.add_argument("--residual-evaluation-dir", required=True)
+    compare.add_argument("--baseline-prediction-dir", required=True)
+    compare.add_argument("--residual-prediction-dir", required=True)
+    compare.add_argument("--dataset-dir", required=True)
+    compare.add_argument("--output-dir", required=True)
+    compare.add_argument("--max-images", type=int, default=100)
+    compare.add_argument("--dpi", type=int, default=150)
+
+    summary = commands.add_parser("summarize-residual", help="Write residual experiment ledger")
+    summary.add_argument("--selection-file", required=True)
+    summary.add_argument("--evaluation-dir", required=True)
+    summary.add_argument("--output-dir", required=True)
     return parser
 
 
@@ -87,12 +114,21 @@ def main(argv=None):
             max_inference=args.max_inference,
             progress=not args.no_progress,
         )
+    elif args.command == "prepare-residual":
+        from .datasets.residual_dataset import prepare_residual_dataset
+        result = prepare_residual_dataset(
+            args.source_dataset_dir, args.output_dir,
+            temperature=args.temperature,
+            clip_quantile_low=args.clip_quantile_low,
+            clip_quantile_high=args.clip_quantile_high,
+        )
     elif args.command == "train":
         from .generation.train import train_model
         result = train_model(
             args.dataset_dir, args.artifact_dir, args.model, device=args.device,
             epochs=args.epochs, batch_size=args.batch_size, resume=not args.no_resume,
             progress=not args.no_progress,
+            dropout=args.dropout,
         )
     elif args.command == "select-model":
         from .generation.select_model import select_model
@@ -100,6 +136,9 @@ def main(argv=None):
             args.dataset_dir, args.model_dir, args.output_dir, device=args.device,
             num_samples=args.num_samples, max_records=args.max_records,
             progress=not args.no_progress,
+            candidates=tuple(args.model or ("mlp", "unet")),
+            mae_limit=args.mae_limit, coverage_min=args.coverage_min,
+            interval_width_limit=args.interval_width_limit,
         )
     elif args.command == "predict":
         from .generation.predict import predict
@@ -109,7 +148,7 @@ def main(argv=None):
             save_samples=args.save_samples, max_records=args.max_records,
             progress=not args.no_progress,
         )
-    else:
+    elif args.command == "evaluate":
         from .evaluation.evaluate import evaluate
         result = evaluate(
             args.dataset_dir, args.prediction_dir, args.output_dir,
@@ -119,6 +158,18 @@ def main(argv=None):
             plot_style=args.plot_style,
             single_sample_index=args.single_sample_index,
             progress=not args.no_progress,
+        )
+    elif args.command == "compare":
+        from .evaluation.compare_predictions import compare_predictions
+        result = compare_predictions(
+            args.baseline_evaluation_dir, args.residual_evaluation_dir,
+            args.baseline_prediction_dir, args.residual_prediction_dir,
+            args.dataset_dir, args.output_dir, max_images=args.max_images, dpi=args.dpi,
+        )
+    else:
+        from .evaluation.experiment_summary import summarize_residual_experiment
+        result = summarize_residual_experiment(
+            args.selection_file, args.evaluation_dir, args.output_dir,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

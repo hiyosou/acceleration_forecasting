@@ -101,7 +101,9 @@ def predict(
             sampling_steps=sampling_steps, eta=eta, seed=seed,
             clean_clip=sampling_bounds.normalized,
         )
-        samples = dataset.normalization.denormalize(normalized, clip_nonnegative=True)
+        samples = dataset.denormalize_prediction(
+            normalized, index, tuple(selection.get("final_physical_bounds", (0.3, 5.0)))
+        )
         mean = samples.mean(axis=0)
         median = np.median(samples, axis=0)
         p10, p90 = np.percentile(samples, [10, 90], axis=0)
@@ -151,6 +153,7 @@ def predict(
         "sampling_bounds": sampling_bounds.to_dict(),
         "dataset_build_id": dataset_build_id,
         "guide_search_settings": dataset_config,
+        "residual_mode": bool(selection.get("residual_mode", False)),
     }
     (output_dir / "prediction_run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     return run
