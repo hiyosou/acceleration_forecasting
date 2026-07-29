@@ -41,6 +41,7 @@ def build_parser():
     train.add_argument("--no-resume", action="store_true")
     train.add_argument("--no-progress", action="store_true")
     train.add_argument("--dropout", type=float, default=0.1)
+    train.add_argument("--no-cross-attention", action="store_true")
 
     select = commands.add_parser("select-model", help="validationで正式モデルを選択")
     select.add_argument("--dataset-dir", default=str(DEFAULT_ARTIFACTS / "datasets"))
@@ -66,6 +67,7 @@ def build_parser():
     predict.add_argument("--max-records", type=int)
     predict.add_argument("--use-selected-model", action="store_true", help=argparse.SUPPRESS)
     predict.add_argument("--no-progress", action="store_true")
+    predict.add_argument("--allow-failed-quality-gate", action="store_true")
 
     evaluate = commands.add_parser("evaluate", help="正解を読み評価・可視化")
     evaluate.add_argument("--dataset-dir", default=str(DEFAULT_ARTIFACTS / "datasets"))
@@ -109,6 +111,20 @@ def build_parser():
     guide_plots.add_argument("--y-max", type=float, default=5.0)
     guide_plots.add_argument("--dpi", type=int, default=150)
     guide_plots.add_argument("--no-progress", action="store_true")
+
+    ablation = commands.add_parser("compare-attention", help="Compare residual attention ablation")
+    ablation.add_argument("--dataset-dir", required=True)
+    ablation.add_argument("--one-anchor-prediction-dir", required=True)
+    ablation.add_argument("--attention-prediction-dir", required=True)
+    ablation.add_argument("--no-attention-prediction-dir", required=True)
+    ablation.add_argument("--one-anchor-evaluation-dir", required=True)
+    ablation.add_argument("--attention-evaluation-dir", required=True)
+    ablation.add_argument("--no-attention-evaluation-dir", required=True)
+    ablation.add_argument("--attention-selection-file", required=True)
+    ablation.add_argument("--no-attention-selection-file", required=True)
+    ablation.add_argument("--output-dir", required=True)
+    ablation.add_argument("--max-images", type=int, default=100)
+    ablation.add_argument("--dpi", type=int, default=150)
     return parser
 
 
@@ -137,6 +153,7 @@ def main(argv=None):
             epochs=args.epochs, batch_size=args.batch_size, resume=not args.no_resume,
             progress=not args.no_progress,
             dropout=args.dropout,
+            use_cross_attention=not args.no_cross_attention,
         )
     elif args.command == "select-model":
         from .generation.select_model import select_model
@@ -155,6 +172,7 @@ def main(argv=None):
             num_samples=args.num_samples, sampling_steps=args.sampling_steps,
             save_samples=args.save_samples, max_records=args.max_records,
             progress=not args.no_progress,
+            allow_failed_quality_gate=args.allow_failed_quality_gate,
         )
     elif args.command == "evaluate":
         from .evaluation.evaluate import evaluate
@@ -179,11 +197,21 @@ def main(argv=None):
         result = summarize_residual_experiment(
             args.selection_file, args.evaluation_dir, args.output_dir,
         )
-    else:
+    elif args.command == "plot-guides":
         from .evaluation.plot_guide_progressions import plot_guide_progressions
         result = plot_guide_progressions(
             args.dataset_dir, args.prediction_dir, args.output_dir,
             y_max=args.y_max, dpi=args.dpi, progress=not args.no_progress,
+        )
+    else:
+        from .evaluation.compare_attention_ablation import compare_attention_ablation
+        result = compare_attention_ablation(
+            args.dataset_dir, args.one_anchor_prediction_dir,
+            args.attention_prediction_dir, args.no_attention_prediction_dir,
+            args.one_anchor_evaluation_dir, args.attention_evaluation_dir,
+            args.no_attention_evaluation_dir, args.attention_selection_file,
+            args.no_attention_selection_file, args.output_dir,
+            max_images=args.max_images, dpi=args.dpi,
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

@@ -86,7 +86,10 @@ def create_model(model_name, **kwargs):
         denoiser = MLPDenoiser(dropout=kwargs.get("dropout", 0.1))
     elif model_name == "unet":
         from .unet1d_denoiser import UNet1DDenoiser
-        denoiser = UNet1DDenoiser(dropout=kwargs.get("dropout", 0.1))
+        denoiser = UNet1DDenoiser(
+            dropout=kwargs.get("dropout", 0.1),
+            use_cross_attention=kwargs.get("use_cross_attention", True),
+        )
     else:
         raise ValueError(f"Unknown model: {model_name}")
     return GaussianDiffusion(denoiser, steps=kwargs.get("steps", 1000))

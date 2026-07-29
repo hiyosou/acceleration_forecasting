@@ -46,17 +46,21 @@ class AttentionStage(nn.Module):
 
 
 class UNet1DDenoiser(ConditionalDenoiser):
-    def __init__(self, dropout=0.1):
-        super().__init__(condition_dim=128, time_dim=128, guide_dim=64)
+    def __init__(self, dropout=0.1, use_cross_attention=True):
+        super().__init__(
+            condition_dim=128, time_dim=128, guide_dim=64,
+            use_guide_encoder=use_cross_attention,
+        )
+        self.use_cross_attention = bool(use_cross_attention)
         self.input = nn.Conv1d(1, 64, 3, padding=1)
         self.enc0 = nn.ModuleList([ConditionalResidualBlock(64, dropout=dropout) for _ in range(2)])
-        self.attn0 = AttentionStage(64)
+        self.attn0 = AttentionStage(64) if self.use_cross_attention else None
         self.down1 = nn.Conv1d(64, 128, 3, stride=2, padding=1)
         self.enc1 = nn.ModuleList([ConditionalResidualBlock(128, dropout=dropout) for _ in range(2)])
-        self.attn1 = AttentionStage(128)
+        self.attn1 = AttentionStage(128) if self.use_cross_attention else None
         self.down2 = nn.Conv1d(128, 256, 3, stride=2, padding=1)
         self.mid = nn.ModuleList([ConditionalResidualBlock(256, dropout=dropout) for _ in range(2)])
-        self.attn_mid = AttentionStage(256)
+        self.attn_mid = AttentionStage(256) if self.use_cross_attention else None
         self.up1 = nn.ConvTranspose1d(256, 128, 3, stride=2, padding=1)
         self.merge1 = nn.Conv1d(256, 128, 1)
         self.dec1 = nn.ModuleList([ConditionalResidualBlock(128, dropout=dropout) for _ in range(2)])
@@ -75,14 +79,18 @@ class UNet1DDenoiser(ConditionalDenoiser):
         condition, time, guides = self.encode_conditions(batch, timesteps)
         global_condition = torch.cat([condition, time], dim=-1)
         x0 = self._blocks(self.input(noisy_future.unsqueeze(1)), self.enc0, global_condition)
-        x0 = self.attn0(x0, guides, batch)
+        if self.use_cross_attention:
+            x0 = self.attn0(x0, guides, batch)
         x1 = self._blocks(self.down1(x0), self.enc1, global_condition)
-        x1 = self.attn1(x1, guides, batch)
+        if self.use_cross_attention:
+            x1 = self.attn1(x1, guides, batch)
         x2 = self._blocks(self.down2(x1), self.mid, global_condition)
-        if return_attention:
+        if return_attention and self.use_cross_attention:
             x2, weights = self.attn_mid(x2, guides, batch, return_weights=True)
-        else:
+        elif self.use_cross_attention:
             x2 = self.attn_mid(x2, guides, batch)
+            weights = None
+        else:
             weights = None
         y1 = self.up1(x2)
         y1 = self._blocks(self.merge1(torch.cat([y1, x1], dim=1)), self.dec1, global_condition)
@@ -90,4 +98,3 @@ class UNet1DDenoiser(ConditionalDenoiser):
         y0 = self._blocks(self.merge0(torch.cat([y0, x0], dim=1)), self.dec0, global_condition)
         prediction = self.output(y0).squeeze(1)
         return (prediction, weights) if return_attention else prediction
-

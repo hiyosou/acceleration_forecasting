@@ -36,6 +36,7 @@ def predict(
     chunk_size=100,
     max_records=None,
     progress=True,
+    allow_failed_quality_gate=False,
 ):
     started = time.time()
     dataset_dir, output_dir = Path(dataset_dir), Path(output_dir)
@@ -51,7 +52,10 @@ def predict(
     dataset_build_id = dataset_config["dataset_build_id"]
     if selection.get("dataset_build_id") != dataset_build_id:
         raise ValueError("selected model and generation dataset use different guide search configurations")
-    if not selection.get("quality_gate", {}).get("passed", False):
+    if (
+        not selection.get("quality_gate", {}).get("passed", False)
+        and not allow_failed_quality_gate
+    ):
         raise ValueError("selected model did not pass the validation quality gate")
     sampling_bounds = SamplingBounds.from_dict(selection["sampling_bounds"])
     model, model_name, actual_device = load_ema_checkpoint(selection["selected_checkpoint"], device)
@@ -154,6 +158,7 @@ def predict(
         "dataset_build_id": dataset_build_id,
         "guide_search_settings": dataset_config,
         "residual_mode": bool(selection.get("residual_mode", False)),
+        "quality_gate_override": bool(allow_failed_quality_gate),
     }
     (output_dir / "prediction_run.json").write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
     return run

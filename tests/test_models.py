@@ -128,3 +128,35 @@ def test_predict_rejects_legacy_selection_without_sampling_bounds(tmp_path):
     selection.write_text(json.dumps({"selected_checkpoint": "unused.pt"}), encoding="utf-8")
     with pytest.raises(ValueError, match="sampling_bounds"):
         predict(tmp_path, selection, tmp_path / "output", progress=False)
+
+
+def test_unet_without_cross_attention_has_no_guide_modules_and_is_guide_independent():
+    model = create_model("unet", steps=20, use_cross_attention=False)
+    model.eval()
+    assert model.denoiser.guide_encoder is None
+    assert model.denoiser.attn0 is None
+    assert model.denoiser.attn1 is None
+    assert model.denoiser.attn_mid is None
+    assert not any("guide_encoder" in name or "attn" in name for name, _ in model.named_parameters())
+    data = batch(1)
+    noisy = torch.randn(1, 18)
+    timestep = torch.tensor([5])
+    first = model.denoiser(noisy, timestep, data)
+    changed = {key: value.clone() for key, value in data.items()}
+    changed["guide_values"] += 1000
+    changed["guide_deltas"] -= 1000
+    changed["guide_similarities"][:] = -100
+    changed["guide_mask"][:] = 0
+    changed["retrieval_mask"][:] = 0
+    second = model.denoiser(noisy, timestep, changed)
+    assert first.shape == (1, 18)
+    assert torch.isfinite(first).all()
+    assert torch.allclose(first, second)
+
+
+def test_unet_attention_flag_changes_parameter_count():
+    with_attention = create_model("unet", steps=20, use_cross_attention=True)
+    without_attention = create_model("unet", steps=20, use_cross_attention=False)
+    count_with = sum(parameter.numel() for parameter in with_attention.parameters())
+    count_without = sum(parameter.numel() for parameter in without_attention.parameters())
+    assert count_without < count_with

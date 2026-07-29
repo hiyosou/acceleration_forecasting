@@ -68,6 +68,7 @@ def train_model(
     ema_decay=0.999,
     seed=42,
     dropout=0.1,
+    use_cross_attention=True,
     resume=True,
     progress=True,
 ):
@@ -90,7 +91,10 @@ def train_model(
     generator = torch.Generator().manual_seed(seed)
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True, generator=generator, num_workers=0)
     valid_loader = DataLoader(valid_data, batch_size=batch_size, shuffle=False, num_workers=0)
-    model_kwargs = {"dropout": float(dropout)}
+    model_kwargs = {
+        "dropout": float(dropout),
+        "use_cross_attention": bool(use_cross_attention),
+    }
     model = create_model(model_name, **model_kwargs).to(device)
     ema = EMA(model, ema_decay)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
@@ -109,7 +113,11 @@ def train_model(
     last_path = output / "last_model.pt"
     if resume and last_path.is_file():
         checkpoint = torch.load(last_path, map_location=device, weights_only=False)
-        if checkpoint.get("dataset_build_id", "legacy") == dataset_build_id:
+        checkpoint_kwargs = checkpoint.get("model_kwargs", {"dropout": 0.1, "use_cross_attention": True})
+        if (
+            checkpoint.get("dataset_build_id", "legacy") == dataset_build_id
+            and checkpoint_kwargs == model_kwargs
+        ):
             model.load_state_dict(checkpoint["model_state_dict"])
             ema.load_state_dict(checkpoint["ema_state_dict"])
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -215,6 +223,7 @@ def train_model(
         "seed": seed, "device": str(device), "best_validation_loss": best_loss,
         "dataset_build_id": dataset_build_id,
         "dropout": float(dropout),
+        "use_cross_attention": bool(use_cross_attention),
     }
     (output / "resolved_config.json").write_text(json.dumps(resolved, indent=2), encoding="utf-8")
     return resolved
